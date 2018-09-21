@@ -4,6 +4,7 @@ require 'puppet/resource_api/puppet_context' unless RUBY_PLATFORM == 'java'
 require 'puppet/resource_api/type_definition'
 require 'puppet/resource_api/version'
 require 'puppet/type'
+require 'puppet/util/network_device'
 
 module Puppet::ResourceApi
   @warning_count = 0
@@ -53,8 +54,14 @@ module Puppet::ResourceApi
       @docs = definition[:docs]
 
       # Keeps a copy of the provider around. Weird naming to avoid clashes with puppet's own `provider` member
+      device_type = nil
+      if definition[:features].include?('remote_resource')
+        # It looks like we only have the connected constant at this point, so this should work
+        device_type = Puppet::Util::NetworkDevice.constants - [:Config, :Base, :Transport]
+        device_type = device_type[0]
+      end
       define_singleton_method(:my_provider) do
-        @my_provider ||= Puppet::ResourceApi.load_provider(definition[:name]).new
+        @my_provider ||= Puppet::ResourceApi.load_provider(definition[:name], device_type).new
       end
 
       # make the provider available in the instance's namespace
@@ -511,13 +518,22 @@ MESSAGE
   end
   module_function :register_type # rubocop:disable Style/AccessModifierDeclarations
 
-  def load_provider(type_name)
+  def load_provider(type_name, device_type=nil)
     class_name = class_name_from_type_name(type_name)
     type_name_sym = type_name.to_sym
 
     # loads the "puppet/provider/#{type_name}/#{type_name}" file through puppet
     Puppet::Type.type(type_name_sym).provider(type_name_sym)
-    Puppet::Provider.const_get(class_name).const_get(class_name)
+    if device_type
+      begin
+        Puppet::Provider.const_get(class_name).const_get(device_type)
+      rescue NameError
+        # Existing provider may not be up to date fallback to legacy approach
+        Puppet::Provider.const_get(class_name).const_get(class_name)
+      end
+    else
+      Puppet::Provider.const_get(class_name).const_get(class_name)
+    end
   rescue NameError
     raise Puppet::DevError, "class #{class_name} not found in puppet/provider/#{type_name}/#{type_name}"
   end
